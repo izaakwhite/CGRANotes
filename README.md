@@ -39,7 +39,7 @@ sudo docker rm -f aha_container
 sudo docker run -it --name aha_container aha_image bash
 ```
 
-### Now In Container:
+# Now In Container:
 ```bash
 source /aha/bin/activate
 
