@@ -83,3 +83,7 @@ cd /aha; ./garnet/.github/scripts/run_pytest.sh
 I have been poking around the files and the github to figure out how to run a simple test program on this cgra so for now my to do list kinda looks like
 - [ ] run a program on the cgra
 - [ ] reasearch other cgra simulators
+
+## Branches - Master
+### What I'm doing ATM
+Copy of standford files + my simple 'hello world' program & shell script that I'm trying to get to run on the simulated CGRA
