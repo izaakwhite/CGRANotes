@@ -1,0 +1,228 @@
+# All "docker"-tagged agents must live on a single machine
+# (e.g. r7cad-docker), so they can all share the same docker image.
+agents: { docker: true }
+
+env:
+  # Default config is "pr_aha"
+  CONFIG: ${CONFIG:-pr_aha}
+
+  # "COMMON" is a dir where we can pass information from one step to another
+  COMMON: /var/lib/buildkite-agent/builds/DELETEME-$BUILDKITE_BUILD_NUMBER
+
+  REGRESS_METAHOOKS: $$COMMON/regress-metahooks.sh
+  IMAGE: garnet:aha-flow-build-$BUILDKITE_BUILD_NUMBER
+
+steps:
+
+- label: "Build Docker Image"
+
+  plugins:
+  # Override standard checkout procedure with custom checkout script
+  - uber-workflow/run-without-clone:
+
+  # My hooks
+  - improbable-eng/metahook:
+
+      # Clone aha repo and optionally update submod according to where build request originated:
+      # Req from aha repo:    check out aha commit BUILDKITE_COMMIT
+      # Req from submod repo: check out aha master branch, update submod w BUILDKITE_COMMIT
+      pre-checkout: |
+        echo "+++ BDI PRE CHECKOUT HOOK"
+        set +u     # nounset? not on my watch!
+
+        # Clone the aha repo; starting in root dir '/' I think
+        echo I am in dir `pwd`
+        aha_clone=$BUILDKITE_BUILD_CHECKOUT_PATH;
+        set -x
+        /bin/rm -rf $$aha_clone; mkdir -p $$aha_clone
+        git clone https://github.com/StanfordAHA/aha $$aha_clone; cd $$aha_clone;
+        git remote set-url origin https://github.com/StanfordAHA/aha     # Why?
+        git clean -ffxdq
+        set +x
+        bin=$BUILDKITE_BUILD_CHECKOUT_PATH/.buildkite/bin
+
+        if [ "$$AHA_SUBMOD_FLOW_COMMIT" ]; then
+            echo 'Submod pull requests use master branch (sometimes overridden by DEV_BRANCH)'
+            # (aha-flow steps is responsible for setting DEV_BRANCH)
+            # (https://buildkite.com/stanford-aha/aha-flow/settings/steps)
+            git checkout $$DEV_BRANCH || echo no dev branch found, continuing with master
+
+            # Make sure env var BUILDKITE_PULL_REQUEST_REPO is set correctly
+            source $$bin/update-pr-repo.sh
+        else
+            echo 'Aha push/PR uses pushed branch'
+            git checkout $$BUILDKITE_COMMIT
+        fi
+
+
+        # If build was triggered by a pull request, annotate build with
+        #    links pointing to pull request on github.
+        # Set REQUEST_TYPE to one of "AHA_PUSH", "AHA_PR", or "SUBMOD_PR"
+        # Set PR_REPO_TAIL to submod associated with the PR, e.g. "canal"
+        # Add REQUEST_TYPE env temp file for use by later steps
+        source $$bin/set-trigfrom-and-reqtype.sh
+
+        ~/bin/status-update --force pending   # Send "pending" status to github PR page
+
+        # Checkout and update correct aha branch and submodules
+        source $$bin/custom-checkout.sh
+
+      # Send regression test pass-fail info to github pull request page
+      pre-exit: |
+        echo "+++ CHECKING EXIT STATUS"; set -x
+        echo "Send status to github, delete docker image if job failed"
+
+        # status-update exit status will tell us if this step has failed
+        if ! ~/bin/status-update pending; then
+            # Build failed already, remove the docker image and begone
+            (set -x; docker image rm "garnet:aha-flow-build-$${BUILDKITE_BUILD_NUMBER}" --no-prune)
+        fi
+
+  commands:
+  - echo "+++ BDI PIPELINE.XML COMMANDS BEGIN"
+
+  - echo "--- Save repo things in common area"
+  - mkdir -p $$COMMON
+  - cp $$BUILDKITE_BUILD_CHECKOUT_PATH/.buildkite/bin/regress-metahooks.sh $$COMMON
+
+  - echo "--- DEBUG DOCKER TRASH"
+  - set -x; docker images; docker ps;
+
+  - echo "--- Creating garnet Image"
+  - docker build . -t "$$IMAGE"
+
+  - echo "--- Pruning Docker Images"
+  - yes | docker image prune -a --filter "until=6h" --filter=label='description=garnet' || true
+
+  - echo "--- BDI PIPELINE.XML COMMANDS END"
+
+- wait: ~
+
+########################################################################
+# AMBER GOLD step
+
+- label: "Amber Gold RTL"
+  soft_fail: true  # So that failing gold check does not fail pipeline.
+  plugins:
+    - uber-workflow/run-without-clone:  # Don't need clone when using docker
+    - docker#v3.2.0:
+        image: garnet:aha-flow-build-${BUILDKITE_BUILD_NUMBER}
+        volumes: ["/cad/:/cad"]
+        shell:   ["/bin/bash", "-e", "-c"]
+        mount-checkout: false
+  commands: |
+    echo "/aha/.buildkite/bin/rtl-goldcheck.sh amber"
+    if ! /aha/.buildkite/bin/rtl-goldcheck.sh amber; then
+        msg="Amber gold check FAILED. This is not fatal. But it really should be fixed."
+        echo "++ $$msg"
+        echo "$$msg" | buildkite-agent annotate --style "error" --context amber
+        exit 13
+    fi
+
+########################################################################
+# ONYX GOLD step
+
+- label: "Onyx Gold"
+  soft_fail: true  # So that failing gold check does not fail pipeline.
+  plugins:
+    - uber-workflow/run-without-clone:  # Don't need clone when using docker
+    - docker#v3.2.0:
+        image: garnet:aha-flow-build-${BUILDKITE_BUILD_NUMBER}
+        volumes: ["/cad/:/cad"]
+        shell:   ["/bin/bash", "-e", "-c"]
+        mount-checkout: false
+  commands: |
+    echo "/aha/.buildkite/bin/rtl-goldcheck.sh onyx"
+    if ! /aha/.buildkite/bin/rtl-goldcheck.sh onyx; then
+        msg="Onyx gold check FAILED. This is not fatal. But it really should be fixed."
+        echo "++ $$msg"
+        echo "$$msg" | buildkite-agent annotate --style "error" --context onyx
+        exit 13
+    fi
+
+########################################################################
+# NOTES: onyx regressions
+
+# We report success to the aha-flow app by removing the .TEST file, which is
+# created in the post-checkout hook and checked-for in the pre-exit hook.
+
+# Instead of multiple similar onyx-regression steps, could maybe do
+# some kind of $$bin/gen-steps | docker-agent upload
+
+########################################################################
+# STEP: onyx regression 1
+
+- label: "Regress 1"
+  env: { CONTAINER: deleteme-regress1-$BUILDKITE_BUILD_NUMBER }
+
+  plugins:
+    - uber-workflow/run-without-clone:
+
+    - improbable-eng/metahook:
+        pre-command: $REGRESS_METAHOOKS --pre-command
+        pre-exit:    $REGRESS_METAHOOKS --pre-exit
+
+  commands:
+    - docker kill $$CONTAINER || echo okay
+    - docker run -id --name $$CONTAINER --rm -v /cad:/cad -v ./temp:/buildkite:rw $$IMAGE bash
+    - script="$($REGRESS_METAHOOKS --commands)"
+    # - docker exec -e CONFIG=fast -e REGSTEP=1 $$CONTAINER /bin/bash -c "$$script"
+    - docker exec -e CONFIG=$$CONFIG -e REGSTEP=1 $$CONTAINER /bin/bash -c "$$script"
+    - docker kill $$CONTAINER
+
+########################################################################
+# STEP: onyx regression 2
+
+- label: "Regress 2"
+  env: { CONTAINER: deleteme-regress2-$BUILDKITE_BUILD_NUMBER }
+
+  plugins:
+    - uber-workflow/run-without-clone:
+    - improbable-eng/metahook:
+        pre-command: $REGRESS_METAHOOKS --pre-command
+        pre-exit:    $REGRESS_METAHOOKS --pre-exit
+
+  commands:
+    - docker kill $$CONTAINER || echo okay
+    - docker run -id --name $$CONTAINER --rm -v /cad:/cad -v ./temp:/buildkite:rw $$IMAGE bash
+    - script="$($REGRESS_METAHOOKS --commands)"
+    - docker exec -e CONFIG=$$CONFIG -e REGSTEP=2 $$CONTAINER /bin/bash -c "$$script"
+    - docker kill $$CONTAINER
+
+########################################################################
+# STEP: onyx regression 3
+
+- label: "Regress 3"
+  env: { CONTAINER: deleteme-regress3-$BUILDKITE_BUILD_NUMBER }
+
+  plugins:
+    - uber-workflow/run-without-clone:
+    - improbable-eng/metahook:
+        pre-command: $REGRESS_METAHOOKS --pre-command
+        pre-exit:    $REGRESS_METAHOOKS --pre-exit
+
+  commands:
+    - docker kill $$CONTAINER || echo okay
+    - docker run -id --name $$CONTAINER --rm -v /cad:/cad -v ./temp:/buildkite:rw $$IMAGE bash
+    - script="$($REGRESS_METAHOOKS --commands)"
+    - docker exec -e CONFIG=$$CONFIG -e REGSTEP=3 $$CONTAINER /bin/bash -c "$$script"
+    - docker kill $$CONTAINER
+
+########################################################################
+# STEP: final cleanup
+
+# Wait for all steps to complete before deleting image
+- wait: { continue_on_failure: true }
+
+- label: ":skull_and_crossbones: Delete Docker Image"
+
+  # "run-without-clone" b/c don't need repo just to delete the docker image
+  plugins:   [ uber-workflow/run-without-clone: ]
+
+  # Set "soft-fail" -- failing cleanup should not fail the larger pipeline.
+  soft_fail: true
+
+  # Not exactly sure why '--no-prune' is included...?
+  commands:
+    - docker image rm "garnet:aha-flow-build-${BUILDKITE_BUILD_NUMBER}" --no-prune
+    - /bin/rm -rf $$COMMON

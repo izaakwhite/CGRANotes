@@ -1,0 +1,32 @@
+name: CI Test
+
+on: [push]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, 'skip ci')"
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Checkout submodules
+      shell: bash
+      run: |
+        auth_header="$(git config --local --get http.https://github.com/.extraheader)"
+        git submodule sync --recursive
+        git -c "http.extraheader=$auth_header" -c protocol.version=2 submodule update --init --force --recursive --depth=1
+    - name: Pull and run docker 🐋 
+      shell: bash
+      run: |
+        docker run -it -d --name lakebox --mount type=bind,source="$(pwd)"/../lake,target=/lake stanfordaha/garnet:latest bash
+    - name: Run tests ⚙️
+      shell: bash
+      run: |
+        # Remove docker lake and insert our version that we want to test
+        docker exec -i lakebox /bin/bash -c "rm -rf /aha/lake"
+        docker cp ../lake lakebox:/aha/lake
+        # Tests require installation of verilator
+        docker exec -i lakebox bash -c 'yes | apt-get install verilator'
+        # Run the tests
+        docker exec -i lakebox bash -c 'source /aha/bin/activate; cd lake; pytest -v tests/'
