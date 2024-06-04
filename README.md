@@ -20,7 +20,7 @@ git submodule update --init --recursive
 ```
 
 # How to Start -- WSL
-
+### In ~./aha
 ```bash
 # Set up docker daemon
 sudo nohup dockerd &
@@ -50,7 +50,7 @@ cd /aha/garnet
 python garnet.py --width 4 --height 2 --verilog
 ```
 ## Tid bits
-**Note: All in ~/aha/garnet** 
+**Note: All in ~./aha/garnet** 
 ### Help
 ```bash
 python garnet.py --help
