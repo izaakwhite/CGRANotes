@@ -86,4 +86,4 @@ I have been poking around the files and the github to figure out how to run a si
  
 ## Branches - Master
 ### What I'm doing ATM
-Copy of standford files + my simple 'hello world' program & shell script that I'm trying to get to run on the simulated CGRA
+Copy of standford files + my simple 'hello world' program & shell script that I'm trying to get to run on the simulated CGRA. In folder `garnet/myFolder`
