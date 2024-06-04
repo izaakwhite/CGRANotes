@@ -26,10 +26,10 @@ git submodule update --init --recursive
 sudo nohup dockerd &
 
 # Build the Docker image -- This may take a while & a lot of computing power the first time
-docker build . -t aha_image
+sudo docker build . -t aha_image
 
 # Run a Docker container from the built image
-docker run -it --name aha_container aha_image bash
+sudo docker run -it --name aha_container aha_image bash
 ```
 --- 
 **Note: This took personally took me 3 hours**
